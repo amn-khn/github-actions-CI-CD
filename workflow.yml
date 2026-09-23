@@ -1,0 +1,80 @@
+name: Docker CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Clone repository
+        run: |
+          git clone https://github.com/${{ github.repository }}.git .
+          git checkout ${{ github.sha }}
+
+      - name: Login to DockerHub
+        run: |
+          echo "${{ secrets.DOC_PWD }}" | \
+          docker login -u "${{ secrets.DOC_USERNAME }}" --password-stdin
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ secrets.DOC_USERNAME }}/github-actions-docker:latest .
+
+      - name: Push Docker image
+        run: |
+          docker push \
+            ${{ secrets.DOC_USERNAME }}/github-actions-docker:latest
+
+      - name: Deploy to EC2
+        run: |
+          echo "${{ secrets.KEY }}" > private_key.pem
+          chmod 600 private_key.pem
+
+          ssh -o StrictHostKeyChecking=no \
+            -i private_key.pem \
+            ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} << 'EOF'
+          if ! command -v docker &> /dev/null
+          then
+            echo "Installing Docker..."
+
+            sudo dnf install -y docker
+            sudo systemctl start docker
+            sudo systemctl enable docker
+          fi
+
+          echo "${{ secrets.DOC_PWD }}" | \
+            sudo docker login \
+            -u "${{ secrets.DOC_USERNAME }}" \
+            --password-stdin
+
+          echo "Pulling latest image..."
+
+          sudo docker pull \
+            ${{ secrets.DOC_USERNAME }}/github-actions-docker:latest
+
+          echo "Stopping old container..."
+
+          sudo docker stop github-actions-docker || true
+
+          echo "Removing old container..."
+
+          sudo docker rm github-actions-docker || true
+
+          echo "Starting new container..."
+
+          sudo docker run -d \
+            --name github-actions-docker \
+            -p 80:80 \
+            ${{ secrets.DOC_USERNAME }}/github-actions-docker:latest
+
+          echo "Deployment completed!"
+
+          EOF
+
+          rm -f private_key.pem
